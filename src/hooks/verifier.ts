@@ -25,6 +25,23 @@ export function runBuild(buildDir: string): string | null {
   }
 }
 
+/**
+ * Check if a JSX file uses components without importing them.
+ * General rule: <CapitalizedName> in JSX requires a matching import.
+ */
+export function checkMissingImports(filePath: string, content: string): string | null {
+  if (!filePath.endsWith(".jsx") && !filePath.endsWith(".tsx")) return null
+  const used = [...new Set((content.match(/<([A-Z][a-zA-Z]+)/g) || []).map(m => m.slice(1)))]
+  const imported = (content.match(/import\s+(\w+)|import\s*\{([^}]+)\}/g) || [])
+    .flatMap(m => m.replace(/import\s*\{?\s*/, "").replace(/\s*\}?\s*$/, "").split(",").map(n => n.trim()))
+  const builtins = new Set(["React", "Fragment", "Suspense", "StrictMode"])
+  const missing = used.filter(c => !builtins.has(c) && !imported.includes(c))
+  if (missing.length > 0) {
+    return `\n\n🛑 [OMU] MISSING IMPORTS in ${filePath}: You use <${missing.join(">, <")}> but did not import them. Add import statements for each component.`
+  }
+  return null
+}
+
 export function findBuildDir(filePath: string): string | null {
   try {
     const path = require("path")

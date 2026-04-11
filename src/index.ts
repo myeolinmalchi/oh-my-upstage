@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { validate, ensureDirectory } from "./hooks/validator"
 import { type SessionState, createState, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles } from "./hooks/coordinator"
-import { runBuild, findBuildDir } from "./hooks/verifier"
+import { runBuild, findBuildDir, checkMissingImports } from "./hooks/verifier"
 
 const SYSTEM_RULES = `
 # OMU Harness
@@ -56,6 +56,12 @@ const OMUPlugin: Plugin = async (ctx) => {
           const msg = trackWrite(state, filePath)
           if (msg) output.output += msg
 
+          // Check missing imports in JSX
+          if (args?.content) {
+            const importMsg = checkMissingImports(filePath, args.content as string)
+            if (importMsg) output.output += importMsg
+          }
+
           const remaining = getRemainingFiles(state)
           if (state.requiredFiles.length > 0 && remaining.length === 0) {
             const buildDir = findBuildDir(filePath)
@@ -72,6 +78,14 @@ const OMUPlugin: Plugin = async (ctx) => {
           if (filePath) {
             const msg = trackEdit(state, filePath)
             if (msg) output.output += msg
+          }
+        }
+
+        // Bash: detect build failures and force retry
+        if (tool === "bash" && args?.command) {
+          const cmd = args.command as string
+          if ((cmd.includes("npm run build") || cmd.includes("npm build")) && output.output.includes("Error")) {
+            output.output += `\n\n🛑 [OMU] BUILD FAILED. Fix the errors above (remove imports for files that don't exist, fix syntax errors) and run npm run build again. Do NOT skip this.`
           }
         }
 

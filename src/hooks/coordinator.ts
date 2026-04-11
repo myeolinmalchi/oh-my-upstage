@@ -23,7 +23,9 @@ export function createState(): SessionState {
 }
 
 export function extractFilePaths(text: string): string[] {
-  const matches = text.match(/(?:[\w.-]+\/)*[\w.-]+\.(?:jsx?|tsx?|py|css|html)/gi) || []
+  // Match file paths that contain at least one slash (directory separator)
+  // This avoids false positives like "express.json()" → "express.js"
+  const matches = text.match(/(?:[\w.-]+\/)+[\w.-]+\.(?:jsx?|tsx?|py|css|html)/gi) || []
   const excluded = new Set(["package.json", "opencode.json", "vite.config.js", "eslint.config.js", "tsconfig.json", "index.html"])
   return [...new Set(matches)].filter(f => !excluded.has(f) && !f.includes("node_modules"))
 }
