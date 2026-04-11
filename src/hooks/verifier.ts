@@ -14,6 +14,16 @@ export function runBuild(buildDir: string): string | null {
     })
     if (result.status !== 0) {
       const output = (result.stderr || result.stdout || "").trim()
+      // Auto-install missing npm packages
+      const missingPkg = output.match(/failed to resolve import "([^"]+)"/)?.[1]
+      if (missingPkg && !missingPkg.startsWith(".") && !missingPkg.startsWith("/")) {
+        try {
+          cp.spawnSync("npm", ["install", missingPkg], { cwd: buildDir, timeout: 30000, encoding: "utf-8" })
+          // Retry build
+          const retry = cp.spawnSync("npm", ["run", "build"], { cwd: buildDir, timeout: 30000, encoding: "utf-8" })
+          if (retry.status === 0) return `\n\n✅ [OMU] Installed ${missingPkg} and build passed.`
+        } catch {}
+      }
       const errorLines = output.split("\n").filter((l: string) =>
         l.includes("Error") || l.includes("error") || l.includes("Cannot") || l.includes("not found")
       ).slice(0, 5).join("\n")
