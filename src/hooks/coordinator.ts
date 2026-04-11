@@ -9,6 +9,7 @@ export interface SessionState {
   editCounts: Map<string, number>
   failureStreaks: Map<string, number>
   lastCallHash: string | null
+  planWritten: boolean
 }
 
 export function createState(): SessionState {
@@ -19,6 +20,7 @@ export function createState(): SessionState {
     editCounts: new Map(),
     failureStreaks: new Map(),
     lastCallHash: null,
+    planWritten: false,
   }
 }
 

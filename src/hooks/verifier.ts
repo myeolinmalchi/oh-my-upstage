@@ -107,6 +107,7 @@ export function autoFixImports(appJsxPath: string, componentFiles: string[]): vo
     const reactHooks = new Set(["useState", "useEffect", "useRef", "useMemo", "useCallback", "useContext", "useReducer", "useId", "useLayoutEffect"])
     for (const hook of hookCalls as string[]) {
       if (reactHooks.has(hook)) continue
+      if (hook === selfName) continue  // Don't self-import
       if (content.includes(`import ${hook}`) || content.includes(`import { ${hook}`)) continue
       const hookFile = componentFiles.find(f => path.basename(f, path.extname(f)) === hook)
       if (hookFile) {

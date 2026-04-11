@@ -7,16 +7,26 @@ import { analyzeJsx, analyzeServer } from "./hooks/analyzer"
 const SYSTEM_RULES = `
 # OMU Harness
 
-You must write code immediately. Do not ask questions. Do not explore unrelated files.
+You are a coding agent. Write working code immediately. Do not ask questions. Do not explore unrelated files.
 When the harness gives you an error or warning, fix it before proceeding.
 
-## React Rules (CRITICAL)
-- useEffect: If App.jsx fetches data, you MUST call the fetch function inside useEffect(() => { fetchData(); }, []).
-- Empty state: Columns, lists, and containers must ALWAYS render, even when the data array is empty. Never use {array.some() && <Column />} or {array.length > 0 && <List />} to hide containers. Use .filter() or .map() for items INSIDE the container, not to hide the container itself.
-- Persistence: For client-only apps, use the useLocalStorage hook for data. Pass it as the initial state: const [items, setItems] = useLocalStorage('key', []).
-- Drag-and-drop: dataTransfer.getData() returns a STRING. If your IDs are numbers (Date.now()), use parseInt() before comparison.
-- All imported components MUST be rendered in JSX. Do not import a component and then not use it.
-- Write ALL files listed in the requirements. Do not skip server files.
+## Workflow
+1. Write utility hooks first (src/hooks/), then components (src/components/), then App.jsx, then App.css.
+2. Each component must be in its own file. Do NOT put multiple components in one file.
+3. After all files are written, run npm run build to verify. Fix errors if any.
+4. Do NOT run npm run dev, npm start, or any dev server command.
+
+## React Patterns
+- Client-only persistence: write a useLocalStorage custom hook first, use it instead of useState for data.
+- API apps: use useEffect(() => { fetchData(); }, []) in App.jsx. Use full backend URL (http://localhost:PORT/api/...) not relative paths.
+- Containers (lists, columns, grids) must ALWAYS render even when data is empty. Never hide them with conditional rendering.
+- dataTransfer.getData() returns a string — use parseInt() for numeric ID comparison.
+- All imported components MUST be rendered in JSX. Pass all required callback props to child components.
+
+## Fullstack
+- Write server files FIRST, before frontend.
+- Express: include express.json() and app.listen().
+- FastAPI: use Optional from typing (not int | None), add CORSMiddleware.
 `
 
 const OMUPlugin: Plugin = async (ctx) => {
@@ -49,10 +59,13 @@ const OMUPlugin: Plugin = async (ctx) => {
 
     "tool.execute.before": async ({ tool, sessionID }, output) => {
       try {
-        const blocked = validate(tool, output.args)
-        if (blocked) return // tool will see the block message
+        const state = getState(sessionID)
+        validate(tool, output.args)
         ensureDirectory(tool, output.args)
         ensureImportedFiles(tool, output.args)
+
+        // Scaffold protection: preserve original content for protected files
+        // (validate() handles this via args mutation)
       } catch {}
     },
 
@@ -110,6 +123,30 @@ const OMUPlugin: Plugin = async (ctx) => {
                 const appJsx = path.join(srcDir, "App.jsx")
                 if (fs.existsSync(appJsx) && appJsx !== filePath) {
                   autoFixImports(appJsx, diskFiles)
+                }
+              }
+            } catch {}
+          }
+
+          // Detect components on disk that App.jsx doesn't use
+          if (filePath.includes("/components/") || filePath.includes("/hooks/")) {
+            try {
+              const path = require("path")
+              const fs = require("fs")
+              const srcDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
+              const appJsx = path.join(srcDir, "App.jsx")
+              if (fs.existsSync(appJsx)) {
+                const appContent = fs.readFileSync(appJsx, "utf-8")
+                const compDir = path.join(srcDir, "components")
+                const unusedComps: string[] = []
+                if (fs.existsSync(compDir)) {
+                  for (const f of fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js"))) {
+                    const name = path.basename(f, path.extname(f))
+                    if (!appContent.includes(name)) unusedComps.push(name)
+                  }
+                }
+                if (unusedComps.length > 0) {
+                  output.output += `\n\n🛑 [OMU] App.jsx does not use these components: ${unusedComps.join(", ")}. Rewrite App.jsx with the write tool to import and render them.`
                 }
               }
             } catch {}

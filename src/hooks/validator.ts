@@ -20,18 +20,19 @@ export function validate(tool: string, args: any): string | null {
     args.offset = 1
   }
 
-  // Protect scaffold files that shouldn't be overwritten
+  // Protect scaffold files — preserve original content by replacing args
   if (tool === "write" && args?.filePath) {
     const protectedFiles = ["main.jsx", "main.tsx", "index.html", "vite.config.js"]
     const basename = require("path").basename(args.filePath)
     if (protectedFiles.includes(basename)) {
-      return `BLOCKED: Do not overwrite ${basename} — it is part of the project scaffold and already correct.`
+      try {
+        const fs = require("fs")
+        if (fs.existsSync(args.filePath)) {
+          // Replace content with original — write proceeds but file stays unchanged
+          args.content = fs.readFileSync(args.filePath, "utf-8")
+        }
+      } catch {}
     }
-  }
-
-  // Block empty edits
-  if (tool === "edit" && args.oldString && args.newString && args.oldString === args.newString) {
-    return "BLOCKED: oldString and newString are identical. Re-read the file first."
   }
 
   return null

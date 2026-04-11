@@ -77,12 +77,21 @@ export function analyzeJsx(filePath: string, content: string): string[] {
     }
   }
 
-  // 7. Component imports another component but doesn't pass required callbacks
-  // e.g. <Column /> without onDelete or onDrop props
-  if (filePath.includes("Board")) {
-    const hasAddForm = content.includes("AddCardForm") || content.includes("AddForm")
-    if (!hasAddForm) {
-      warnings.push("Board does not render an AddCardForm component. Users need a way to add new items. Import and render AddCardForm.")
+  // 7. Monolith detection: App.jsx with inline component definitions
+  if (isAppFile) {
+    const funcDefs = content.match(/(?:function|const)\s+([A-Z][a-zA-Z]+)\s*(?:=|\()/g) || []
+    const componentDefs = funcDefs.filter((d: string) => {
+      const name = d.match(/(?:function|const)\s+([A-Z][a-zA-Z]+)/)?.[1]
+      return name && name !== "App"
+    })
+    if (componentDefs.length >= 2) {
+      const names = componentDefs.map((d: string) => d.match(/(?:function|const)\s+([A-Z][a-zA-Z]+)/)?.[1]).filter(Boolean)
+      warnings.push(`App.jsx contains ${componentDefs.length} inline component definitions (${names.join(", ")}). Move each component to its own file under src/components/ and import them in App.jsx.`)
+    }
+    // Also check if file is too long without component separation
+    const lines = content.split("\n").length
+    if (lines > 80 && !content.includes("from './components/")) {
+      warnings.push(`App.jsx is ${lines} lines long with no component imports. Split UI sections into separate component files under src/components/.`)
     }
   }
 
