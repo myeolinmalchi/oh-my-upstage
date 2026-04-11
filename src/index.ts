@@ -23,19 +23,17 @@ function debugLog(msg: string) {
 interface SessionState {
   readFiles: Map<string, number>
   editCounts: Map<string, number>
-  /** Tracks file sizes at read time for integrity guard */
   fileSizes: Map<string, number>
-  /** key = hash of (toolName + JSON(args)), value = consecutive failure count */
   failureStreaks: Map<string, number>
-  /** key = hash of (toolName + JSON(args)), value = consecutive call count */
   callStreaks: Map<string, number>
   lastCallHash: string | null
-  /** Tracks whether model ran python/tests after last write */
   lastWriteFile: string | null
   ranTestAfterWrite: boolean
-  /** Tracks reads vs writes to detect exploration without creation */
   readsWithoutWrite: number
   hasWrittenAnyFile: boolean
+  /** Multi-file coordination: files extracted from prompt */
+  requiredFiles: string[]
+  completedFiles: string[]
 }
 
 function createSessionState(): SessionState {
@@ -50,6 +48,8 @@ function createSessionState(): SessionState {
     ranTestAfterWrite: true,
     readsWithoutWrite: 0,
     hasWrittenAnyFile: false,
+    requiredFiles: [],
+    completedFiles: [],
   }
 }
 
@@ -71,6 +71,11 @@ function hashCall(tool: string, args: any): string {
 function argumentValidator(tool: string, args: any): string | null {
   if (!args) return null
 
+  // Redirect tools Solar Pro 3 misuses — guide to next action
+  if (tool === "task" || tool === "question" || tool === "webfetch") {
+    return `BLOCKED: Do not use ${tool}. Write code directly using the write tool.`
+  }
+
   // bash: description is required
   if (tool === "bash" && !args.description) {
     args.description = "Execute command"
@@ -83,7 +88,7 @@ function argumentValidator(tool: string, args: any): string | null {
 
   // edit: block empty edits (oldString === newString)
   if (tool === "edit" && args.oldString && args.newString && args.oldString === args.newString) {
-    return "BLOCKED: oldString and newString are identical. Re-read the file first to get the exact current content, then make a different change."
+    return "BLOCKED: oldString and newString are identical. Re-read the file first."
   }
 
   return null
@@ -184,68 +189,145 @@ function retryEscaper(
  * Adapted from oh-my-upstage AGENTS.md for OpenCode context.
  */
 const SOLAR_SYSTEM_RULES = `
-# OMU Harness — Solar Pro 3 Rules
+# OMU Harness
 
-You are powered by Solar Pro 3. Follow these rules strictly.
-
-## Focus
-- ONLY do what the user asked. Do NOT perform unrelated actions.
-- Do NOT search the web, install packages, run git commands, or explore unrelated files unless explicitly requested.
-- Do NOT use the task/subagent tool for simple tasks. Do the work directly.
-- When asked to CREATE a new file: do NOT explore the project first. Start writing the file IMMEDIATELY.
-- Do NOT read existing files unless the task specifically asks you to modify them.
-- Do NOT use glob, ls, or read on unrelated directories before creating files.
-
-## File Editing
-- For SMALL changes (1-2 lines): use Edit.
-- For LARGE changes (implementing many TODOs, rewriting most of a file): use Write to rewrite the complete file. Include ALL existing code plus your changes.
-- When a file has multiple TODO stubs, do NOT try to Edit them one by one. Instead, Write the complete file with all TODOs implemented at once.
-- After an Edit fails, re-read the file to get the current content before retrying.
-- After 3 Edit failures on the same file: STOP editing. Re-read the file, then use Write to rewrite it completely.
-
-## Efficiency
-- NEVER read the same file more than twice.
-- NEVER re-read a file you just created or wrote — you already know its content.
-- After creating/editing files, verify by running the code once, then respond.
-
-## Multi-Step Tasks
-- Work on ONE file at a time. Finish it completely before starting the next.
-- After creating or editing a file, run the code to verify IMMEDIATELY.
-- If a test fails, read the EXACT error message. Fix ONLY the failing part.
-- Do NOT rewrite entire files to fix small bugs. Use Edit on the specific lines.
-- For Python imports: use absolute imports (e.g., "from models import Todo"), NOT relative imports (e.g., "from .models import Todo") unless inside a package with __init__.py.
-- Always import what you use: List from typing, datetime from datetime, etc.
-
-## Tool Arguments
-- bash: always include the "description" field.
-- read: offset must be >= 1 if provided.
-- write: always include "filePath" and "content".
-- edit: oldString MUST match the file exactly. If Edit fails, re-read the file first.
-- edit: NEVER submit an edit where oldString and newString are the same.
-
-## Code Quality — CRITICAL
-- Your code must ACTUALLY WORK, not just look correct.
-- After implementing, you MUST run the code and verify it works with edge cases.
-- Test these edge cases BEFORE saying you are done:
-  - Empty input / empty collections
-  - None values for Optional parameters (ensure no TypeError/AttributeError)
-  - Boundary conditions: first item, last item, single item
-  - Delete then add: verify IDs/indices remain unique (use max(existing)+1, NOT len(list)+1)
-  - Duplicate inputs: what happens if the same item is added twice?
-- If ANY test fails or crashes, FIX IT before completing.
-- You are NOT done until the code runs without errors on normal AND edge cases.
-
-## Error Recovery
-- When a tool call fails, do NOT retry the exact same call. Change your approach.
-- When Edit fails with "Could not find oldString": re-read the file, copy the EXACT text, try again.
-- When tests partially pass: focus on the FAILING test only, do not rewrite passing code.
-- Maximum 2 retries per operation. After that, try a completely different approach.
-
-## LSP Errors
-- When you see "LSP errors detected" after Write/Edit, you MUST fix them immediately.
-- Do NOT ignore type errors, undefined variables, or import errors.
-- Fix ALL diagnostics before moving to the next step.
+You must write code immediately. Do not ask questions. Do not explore unrelated files.
+When the harness gives you an error or warning, fix it before proceeding.
 `
+
+/**
+ * Extract file paths from a prompt string.
+ * Looks for patterns like src/components/Board.jsx, server.js, server.py, etc.
+ */
+function extractFilePaths(text: string): string[] {
+  const patterns = /(?:[\w.-]+\/)*[\w.-]+\.(?:jsx?|tsx?|py|css|json|html)/gi
+  const matches = text.match(patterns) || []
+  // Deduplicate and filter out common non-file patterns
+  const excluded = new Set(["package.json", "opencode.json", "vite.config.js", "eslint.config.js", "tsconfig.json", "index.html"])
+  return [...new Set(matches)].filter(f => !excluded.has(f) && !f.includes("node_modules"))
+}
+
+/**
+ * Get the next file the model should write.
+ */
+function getNextFile(state: SessionState): string | null {
+  for (const f of state.requiredFiles) {
+    if (!state.completedFiles.includes(f)) return f
+  }
+  return null
+}
+
+function getRemainingFiles(state: SessionState): string[] {
+  return state.requiredFiles.filter(f => !state.completedFiles.includes(f))
+}
+
+/**
+ * Auto-verify: run written Python files and feed errors back.
+ * This is the core Phase 2 mechanism — don't tell the model how to code,
+ * just run the code and show it what broke.
+ */
+function autoVerifyPython(filePath: string): string | null {
+  if (!filePath.endsWith(".py") && !filePath.endsWith(".js")) return null
+  try {
+    const cp = require("child_process")
+
+    // Node.js syntax check
+    if (filePath.endsWith(".js")) {
+      const result = cp.spawnSync("node", ["--check", filePath], {
+        timeout: 5000,
+        encoding: "utf-8",
+      })
+      if (result.status !== 0) {
+        const err = (result.stderr || "unknown error").trim().split("\n").slice(-3).join("\n")
+        return `\n\n🛑 [OMU] SYNTAX ERROR in ${filePath}:\n${err}\nFix this error now.`
+      }
+      return null
+    }
+    // Step 1: syntax + import check
+    const result = cp.spawnSync("python3", ["-c", `
+import ast, sys, subprocess, time, json, urllib.request
+
+code = open("${filePath}").read()
+
+# Step 1: syntax check
+try:
+    ast.parse(code)
+except SyntaxError as e:
+    print(f"SyntaxError: {e}", file=sys.stderr)
+    sys.exit(1)
+
+# Step 2: if FastAPI app, start server and smoke-test endpoints
+if "FastAPI" in code and "uvicorn" in code:
+    # Find port
+    port = 8001
+    for line in code.splitlines():
+        if "port=" in line and "run" in line:
+            try:
+                port = int(''.join(c for c in line.split("port=")[1].split(")")[0].split(",")[0] if c.isdigit()))
+            except: pass
+
+    proc = subprocess.Popen([sys.executable, "${filePath}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2)
+
+    errors = []
+    try:
+        # Test POST with JSON body
+        req = urllib.request.Request(
+            f"http://localhost:{port}/todos",
+            data=json.dumps({"title": "test"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST")
+        try:
+            resp = urllib.request.urlopen(req, timeout=3)
+            body = json.loads(resp.read())
+            if resp.status != 200 and resp.status != 201:
+                errors.append(f"POST /todos returned {resp.status}")
+            elif "id" not in body:
+                errors.append(f"POST /todos response missing 'id' field: {body}")
+        except urllib.error.HTTPError as e:
+            errors.append(f"POST /todos failed ({e.code}): {e.read().decode()[:200]}")
+        except Exception as e:
+            errors.append(f"POST /todos error: {e}")
+
+        # Test GET
+        try:
+            resp = urllib.request.urlopen(f"http://localhost:{port}/todos", timeout=3)
+            body = json.loads(resp.read())
+            if not isinstance(body, list):
+                errors.append(f"GET /todos should return a list, got: {type(body).__name__}")
+        except Exception as e:
+            errors.append(f"GET /todos error: {e}")
+
+        # Test GET / (HTML)
+        try:
+            resp = urllib.request.urlopen(f"http://localhost:{port}/", timeout=3)
+            html = resp.read().decode()
+            if len(html) < 50:
+                errors.append(f"GET / returned only {len(html)} bytes — HTML seems incomplete")
+        except Exception as e:
+            errors.append(f"GET / error: {e}")
+    finally:
+        proc.terminate()
+        proc.wait()
+
+    if errors:
+        print("ENDPOINT ERRORS:\\n" + "\\n".join(errors), file=sys.stderr)
+        sys.exit(1)
+`], {
+      timeout: 5000,
+      encoding: "utf-8",
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    })
+    if (result.status !== 0) {
+      const err = (result.stderr || result.stdout || "unknown error").trim().split("\n").slice(-3).join("\n")
+      return `\n\n🛑 [OMU Harness] AUTO-VERIFY FAILED — your code has errors:\n${err}\nFix these errors now.`
+    }
+  } catch {
+    // Can't run verification — skip silently
+  }
+  return null
+}
 
 /**
  * File Integrity Guard — detects when Write would destroy existing file content.
@@ -295,15 +377,36 @@ const OMUPlugin: Plugin = async (ctx) => {
       } catch {}
     },
 
+    "chat.message": async ({ sessionID }, output) => {
+      try {
+        // Extract required file paths from user prompt
+        const state = getState(sessionID)
+        const text = output.parts?.map((p: any) => p.text || "").join(" ") || ""
+        if (text && state.requiredFiles.length === 0) {
+          state.requiredFiles = extractFilePaths(text)
+          debugLog(`[FILES] Required: ${JSON.stringify(state.requiredFiles)}`)
+        }
+      } catch {}
+    },
+
+    "chat.params": async (_input, output) => {
+      try {
+        // Enable reasoning mode for better code quality
+        (output.options as any).reasoning_effort = "high"
+      } catch {}
+    },
+
     "tool.execute.before": async ({ tool, sessionID }, output) => {
       debugLog(`[BEFORE] tool=${tool} args=${JSON.stringify(output.args).slice(0, 200)}`)
       try {
+        const state = getState(sessionID)
         const blocked = argumentValidator(tool, output.args)
         if (blocked) {
-          debugLog(`[BLOCKED] ${blocked}`)
+          const next = getNextFile(state)
+          const guidance = next ? ` Write ${next} now.` : ""
+          debugLog(`[BLOCKED] ${blocked}${guidance}`)
         }
         // File integrity guard — warn before destructive writes
-        const state = getState(sessionID)
         const warning = fileIntegrityGuard(state, tool, output.args)
         if (warning) {
           debugLog(`[INTEGRITY] ${warning}`)
@@ -326,18 +429,75 @@ const OMUPlugin: Plugin = async (ctx) => {
         loopDetector(state, tool, args, output)
         retryEscaper(state, tool, args, output)
 
-        // Exploration detection — nudge creation if too many reads without writes
-        if (tool === "read" || tool === "glob" || tool === "grep") {
-          if (!state.hasWrittenAnyFile) {
-            state.readsWithoutWrite++
-            if (state.readsWithoutWrite >= 5) {
-              output.output += `\n\n🛑 [OMU Harness] You have read/explored ${state.readsWithoutWrite} times without creating any file. STOP exploring and START writing the requested file NOW.`
-            }
+        // Exploration detection — guide toward writing
+        if (tool !== "write" && tool !== "bash") {
+          state.readsWithoutWrite++
+          const next = getNextFile(state)
+          if (state.readsWithoutWrite >= 3 && next) {
+            output.output += `\n\n🛑 [OMU] You have made ${state.readsWithoutWrite} non-write calls. Write ${next} now.`
+          } else if (state.readsWithoutWrite >= 3) {
+            output.output += `\n\n🛑 [OMU] You have made ${state.readsWithoutWrite} non-write calls. Start writing code now.`
           }
+        }
+        if (tool === "write") {
+          state.readsWithoutWrite = 0
         }
         if (tool === "write") {
           state.hasWrittenAnyFile = true
           state.readsWithoutWrite = 0
+          const filePath = args?.filePath || ""
+
+          // Track completed files
+          if (filePath) {
+            const basename = filePath.split("/").slice(-2).join("/")
+            if (!state.completedFiles.includes(basename)) {
+              state.completedFiles.push(basename)
+            }
+            // File progress guidance
+            const remaining = getRemainingFiles(state)
+            if (remaining.length > 0) {
+              output.output += `\n\n[OMU] File written. Remaining files: ${remaining.join(", ")}. Write the next one now.`
+            }
+          }
+
+          // Auto-verify individual files
+          const verifyResult = autoVerifyPython(filePath)
+          if (verifyResult) {
+            output.output += verifyResult
+          }
+
+          // When all required files are written, run npm run build
+          const remainingAfter = getRemainingFiles(state)
+          if (state.requiredFiles.length > 0 && remainingAfter.length === 0) {
+            try {
+              const cp = require("child_process")
+              // Find the nearest directory with package.json
+              const dir = require("path").dirname(filePath)
+              let buildDir = dir
+              for (let d = dir; d !== "/"; d = require("path").dirname(d)) {
+                if (require("fs").existsSync(require("path").join(d, "package.json"))) {
+                  buildDir = d; break
+                }
+              }
+              const buildResult = cp.spawnSync("npm", ["run", "build"], {
+                cwd: buildDir, timeout: 30000, encoding: "utf-8"
+              })
+              if (buildResult.status !== 0) {
+                const err = (buildResult.stderr || buildResult.stdout || "").trim().split("\n").slice(-5).join("\n")
+                output.output += `\n\n🛑 [OMU] BUILD FAILED:\n${err}\nFix the errors and rebuild.`
+              } else {
+                output.output += `\n\n✅ [OMU] Build succeeded.`
+              }
+            } catch {}
+          }
+        }
+
+        // Scaffold detection — npm create is NOT implementation
+        if (tool === "bash" && args?.command) {
+          const cmd = args.command as string
+          if (cmd.includes("create vite") || cmd.includes("create-react") || cmd.includes("create-next") || cmd.includes("express-generator")) {
+            output.output += `\n\n🛑 [OMU] Scaffolding is NOT implementation. You created a template. Now implement the actual application code — write the components, routes, and logic. Do NOT stop here.`
+          }
         }
 
         // Track write → test sequence
@@ -362,14 +522,6 @@ const OMUPlugin: Plugin = async (ctx) => {
           output.output += `\n\n🛑 [OMU Harness] LSP errors found. You MUST fix these errors before proceeding. Do NOT ignore them.`
         }
 
-        // Code quality patterns — detect common Solar Pro 3 bugs in written Python code
-        if ((tool === "write" || tool === "edit") && args?.filePath?.endsWith(".py") && args?.content) {
-          const content = (args.content || "") as string
-          // Detect len(list)+1 ID pattern — always wrong for IDs after deletions
-          if (content.includes("len(self.") && content.includes("+ 1") && content.includes('"id"')) {
-            output.output += `\n\n🛑 [OMU Harness] BUG DETECTED: You are using len()+1 for ID assignment. This causes duplicate IDs after deletions. Use max(id for existing items)+1 instead, or track a separate next_id counter that only increments.`
-          }
-        }
 
         // Nudge testing if model wrote code but hasn't tested
         if (tool === "read" && !state.ranTestAfterWrite && state.lastWriteFile) {
