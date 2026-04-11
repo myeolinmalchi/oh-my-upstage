@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { validate, ensureDirectory } from "./hooks/validator"
+import { validate, ensureDirectory, ensureImportedFiles, enforceAppLast } from "./hooks/validator"
 import { type SessionState, createState, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles } from "./hooks/coordinator"
-import { runBuild, findBuildDir, checkMissingImports } from "./hooks/verifier"
+import { runBuild, findBuildDir, runLint, autoFixImports } from "./hooks/verifier"
 
 const SYSTEM_RULES = `
 # OMU Harness
@@ -43,6 +43,7 @@ const OMUPlugin: Plugin = async (ctx) => {
         const blocked = validate(tool, output.args)
         if (blocked) return // tool will see the block message
         ensureDirectory(tool, output.args)
+        ensureImportedFiles(tool, output.args)
       } catch {}
     },
 
@@ -56,14 +57,55 @@ const OMUPlugin: Plugin = async (ctx) => {
           const msg = trackWrite(state, filePath)
           if (msg) output.output += msg
 
-          // Check missing imports in JSX
-          if (args?.content) {
-            const importMsg = checkMissingImports(filePath, args.content as string)
-            if (importMsg) output.output += importMsg
+          // Lint only after all files are complete (not per-file)
+          // Per-file lint blocks progress on multi-file projects
+
+          // If App.jsx was written before components, tell model to write components first then rewrite App.jsx
+          if (filePath.endsWith("App.jsx")) {
+            const componentFiles = state.requiredFiles.filter(f => f.includes("components/") || f.includes("hooks/"))
+            const completedComponents = componentFiles.filter(f => state.completedFiles.includes(f))
+            if (componentFiles.length > 0 && completedComponents.length < componentFiles.length) {
+              const remaining = componentFiles.filter(f => !state.completedFiles.includes(f))
+              output.output += `\n\n🛑 [OMU] You wrote App.jsx but component files are not done yet. Write these first: ${remaining.join(", ")}. Then REWRITE App.jsx with proper imports for all components.`
+            }
           }
 
           const remaining = getRemainingFiles(state)
           if (state.requiredFiles.length > 0 && remaining.length === 0) {
+            // All files written — check if App.jsx imports the components
+            const componentFiles = state.completedFiles.filter(f => f.includes("components/"))
+            if (componentFiles.length > 0) {
+              try {
+                const fs = require("fs")
+                const path = require("path")
+                // Find App.jsx
+                const appFile = state.completedFiles.find(f => f.endsWith("App.jsx"))
+                if (appFile) {
+                  const appDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
+                  const appPath = path.join(appDir, "App.jsx")
+                  if (fs.existsSync(appPath)) {
+                    const appContent = fs.readFileSync(appPath, "utf-8")
+                    const unimported = componentFiles.filter(f => {
+                      const name = path.basename(f, path.extname(f))
+                      return !appContent.includes(name)
+                    })
+                    if (unimported.length > 0) {
+                      const names = unimported.map(f => path.basename(f, path.extname(f)))
+                      output.output += `\n\n🛑 [OMU] App.jsx does not import: ${names.join(", ")}. Update App.jsx to import and render these components.`
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            // Auto-fix imports in App.jsx before building
+            try {
+              const path = require("path")
+              const appDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
+              const appJsx = path.join(appDir, "App.jsx")
+              autoFixImports(appJsx, state.completedFiles)
+            } catch {}
+
             const buildDir = findBuildDir(filePath)
             if (buildDir) {
               const buildMsg = runBuild(buildDir)
