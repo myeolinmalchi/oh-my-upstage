@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "upstage": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Upstage Solar Pro 3",
+      "options": {
+        "baseURL": "https://api.upstage.ai/v1"
+      },
+      "models": {
+        "solar-pro3": {
+          "name": "solar-pro3"
+        }
+      }
+    }
+  },
+  "model": "upstage/solar-pro3",
+  "plugin": [
+    "file:///Users/mason/workspace/upstage-ambassador/omu/dist/index.js"
+  ]
+}

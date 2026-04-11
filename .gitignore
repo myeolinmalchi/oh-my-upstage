@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.omc/
+.omu/
+baseline_tasks/
+evaluation/
+iteration5/
+notes_task.py
+*.log
+__pycache__/
+.ruff_cache/
+package-lock.json

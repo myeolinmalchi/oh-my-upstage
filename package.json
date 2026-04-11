@@ -1,0 +1,18 @@
+{
+  "name": "omu-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Oh My Upstage — Solar Pro 3 harness plugin for OpenCode",
+  "exports": "./dist/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.2.10"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
