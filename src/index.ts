@@ -64,35 +64,35 @@ const OMUPlugin: Plugin = async (ctx) => {
           const serverMsg = smokeTestServer(filePath)
           if (serverMsg) output.output += serverMsg
 
-          // If App.jsx was written before components, tell model to write components first then rewrite App.jsx
-          if (filePath.endsWith("App.jsx")) {
-            const componentFiles = state.requiredFiles.filter(f => f.includes("components/") || f.includes("hooks/"))
-            const completedComponents = componentFiles.filter(f => state.completedFiles.includes(f))
-            if (componentFiles.length > 0 && completedComponents.length < componentFiles.length) {
-              const remaining = componentFiles.filter(f => !state.completedFiles.includes(f))
-              output.output += `\n\n🛑 [OMU] You wrote App.jsx but component files are not done yet. Write these first: ${remaining.join(", ")}. Then REWRITE App.jsx with proper imports for all components.`
-            }
-          }
-
-          const remaining = getRemainingFiles(state)
-          if (state.requiredFiles.length > 0 && remaining.length === 0) {
-            // All files written — auto-fix imports in ALL jsx files
+          // Auto-fix imports on EVERY JSX write — scan disk for actual component files
+          if (filePath.endsWith(".jsx") || filePath.endsWith(".js")) {
             try {
               const path = require("path")
               const fs = require("fs")
               const srcDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
-              // Fix App.jsx and all component files
-              const allJsx = [path.join(srcDir, "App.jsx")]
+              // Discover actual component/hook files on disk
+              const diskFiles: string[] = []
               const compDir = path.join(srcDir, "components")
+              const hookDir = path.join(srcDir, "hooks")
               if (fs.existsSync(compDir)) {
-                fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx")).forEach((f: string) => allJsx.push(path.join(compDir, f)))
+                fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js")).forEach((f: string) => diskFiles.push("src/components/" + f))
               }
-              for (const jsxFile of allJsx) {
-                if (fs.existsSync(jsxFile)) {
-                  autoFixImports(jsxFile, state.completedFiles)
+              if (fs.existsSync(hookDir)) {
+                fs.readdirSync(hookDir).filter((f: string) => f.endsWith(".js")).forEach((f: string) => diskFiles.push("src/hooks/" + f))
+              }
+              if (diskFiles.length > 0) {
+                // Fix the written file + App.jsx
+                autoFixImports(filePath, diskFiles)
+                const appJsx = path.join(srcDir, "App.jsx")
+                if (fs.existsSync(appJsx) && appJsx !== filePath) {
+                  autoFixImports(appJsx, diskFiles)
                 }
               }
             } catch {}
+          }
+
+          const remaining = getRemainingFiles(state)
+          if (state.requiredFiles.length > 0 && remaining.length === 0) {
 
             const buildDir = findBuildDir(filePath)
             if (buildDir) {
