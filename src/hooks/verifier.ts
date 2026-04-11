@@ -89,16 +89,22 @@ export function autoFixImports(appJsxPath: string, componentFiles: string[]): vo
     const builtins = new Set(["React", "Fragment", "Suspense", "StrictMode"])
     let added = false
 
+    // This file's own component name — skip self-imports
+    const selfName = path.basename(appJsxPath, path.extname(appJsxPath))
+
     for (const comp of used as string[]) {
       if (builtins.has(comp)) continue
+      if (comp === selfName) continue  // Don't self-import
       if (content.includes(`import ${comp}`) || content.includes(`import { ${comp}`)) continue
 
       // Find matching component file
       const match = componentFiles.find(f => path.basename(f, path.extname(f)) === comp)
       if (match) {
-        // Build relative import path: ./components/CompName or ./hooks/hookName
-        const compBasename = path.basename(match, path.extname(match))
-        let rel = "./" + match.replace(/^.*?src\//, "").replace(path.extname(match), "")
+        // Build relative import path from THIS file to the target
+        const fromDir = path.dirname(appJsxPath).replace(/^.*?src/, "src")
+        const toFile = match.replace(/^.*?src\//, "src/").replace(path.extname(match), "")
+        let rel = "./" + path.relative(fromDir, toFile)
+        if (!rel.startsWith("./") && !rel.startsWith("../")) rel = "./" + rel
         const importLine = `import ${comp} from '${rel}';\n`
         // Add after last import or at top
         const lastImport = content.lastIndexOf("import ")

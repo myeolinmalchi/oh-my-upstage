@@ -72,38 +72,22 @@ const OMUPlugin: Plugin = async (ctx) => {
 
           const remaining = getRemainingFiles(state)
           if (state.requiredFiles.length > 0 && remaining.length === 0) {
-            // All files written — check if App.jsx imports the components
-            const componentFiles = state.completedFiles.filter(f => f.includes("components/"))
-            if (componentFiles.length > 0) {
-              try {
-                const fs = require("fs")
-                const path = require("path")
-                // Find App.jsx
-                const appFile = state.completedFiles.find(f => f.endsWith("App.jsx"))
-                if (appFile) {
-                  const appDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
-                  const appPath = path.join(appDir, "App.jsx")
-                  if (fs.existsSync(appPath)) {
-                    const appContent = fs.readFileSync(appPath, "utf-8")
-                    const unimported = componentFiles.filter(f => {
-                      const name = path.basename(f, path.extname(f))
-                      return !appContent.includes(name)
-                    })
-                    if (unimported.length > 0) {
-                      const names = unimported.map(f => path.basename(f, path.extname(f)))
-                      output.output += `\n\n🛑 [OMU] App.jsx does not import: ${names.join(", ")}. Update App.jsx to import and render these components.`
-                    }
-                  }
-                }
-              } catch {}
-            }
-
-            // Auto-fix imports in App.jsx before building
+            // All files written — auto-fix imports in ALL jsx files
             try {
               const path = require("path")
-              const appDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
-              const appJsx = path.join(appDir, "App.jsx")
-              autoFixImports(appJsx, state.completedFiles)
+              const fs = require("fs")
+              const srcDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
+              // Fix App.jsx and all component files
+              const allJsx = [path.join(srcDir, "App.jsx")]
+              const compDir = path.join(srcDir, "components")
+              if (fs.existsSync(compDir)) {
+                fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx")).forEach((f: string) => allJsx.push(path.join(compDir, f)))
+              }
+              for (const jsxFile of allJsx) {
+                if (fs.existsSync(jsxFile)) {
+                  autoFixImports(jsxFile, state.completedFiles)
+                }
+              }
             } catch {}
 
             const buildDir = findBuildDir(filePath)
