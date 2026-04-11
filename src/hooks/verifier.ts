@@ -102,6 +102,30 @@ export function autoFixImports(appJsxPath: string, componentFiles: string[]): vo
     // This file's own component name — skip self-imports
     const selfName = path.basename(appJsxPath, path.extname(appJsxPath))
 
+    // Also detect hook usage: useXxx( calls without import
+    const hookCalls = [...new Set((content.match(/\buse[A-Z]\w+\s*\(/g) || []).map((m: string) => m.replace(/\s*\($/, "")))]
+    const reactHooks = new Set(["useState", "useEffect", "useRef", "useMemo", "useCallback", "useContext", "useReducer", "useId", "useLayoutEffect"])
+    for (const hook of hookCalls as string[]) {
+      if (reactHooks.has(hook)) continue
+      if (content.includes(`import ${hook}`) || content.includes(`import { ${hook}`)) continue
+      const hookFile = componentFiles.find(f => path.basename(f, path.extname(f)) === hook)
+      if (hookFile) {
+        const fromDir = path.dirname(appJsxPath).replace(/^.*?src/, "src")
+        const toFile = hookFile.replace(/^.*?src\//, "src/").replace(path.extname(hookFile), "")
+        let rel = "./" + path.relative(fromDir, toFile)
+        if (!rel.startsWith("./") && !rel.startsWith("../")) rel = "./" + rel
+        const importLine = `import ${hook} from '${rel}';\n`
+        const lastImport = content.lastIndexOf("import ")
+        if (lastImport >= 0) {
+          const lineEnd = content.indexOf("\n", lastImport)
+          content = content.slice(0, lineEnd + 1) + importLine + content.slice(lineEnd + 1)
+        } else {
+          content = importLine + content
+        }
+        added = true
+      }
+    }
+
     for (const comp of used as string[]) {
       if (builtins.has(comp)) continue
       if (comp === selfName) continue  // Don't self-import
@@ -193,6 +217,96 @@ export function smokeTestServer(filePath: string): string | null {
     }
   } catch {}
   return null
+}
+
+/**
+ * Auto-add CORS middleware to Express server.js files.
+ */
+export function autoFixCors(filePath: string): void {
+  if (!filePath.endsWith("server.js")) return
+  try {
+    const fs = require("fs")
+    if (!fs.existsSync(filePath)) return
+    let content = fs.readFileSync(filePath, "utf-8")
+    if (content.includes("cors")) return // already has cors
+
+    // Add require('cors') after last require
+    const corsRequire = "const cors = require('cors');\n"
+    const corsUse = "app.use(cors());\n"
+
+    // Insert require after last require() line
+    const lastRequire = content.lastIndexOf("require(")
+    if (lastRequire >= 0) {
+      const lineEnd = content.indexOf("\n", lastRequire)
+      content = content.slice(0, lineEnd + 1) + corsRequire + content.slice(lineEnd + 1)
+    } else {
+      content = corsRequire + content
+    }
+
+    // Insert app.use(cors()) after app.use(express.json()) or after app creation
+    const jsonMiddleware = content.indexOf("express.json()")
+    if (jsonMiddleware >= 0) {
+      const lineEnd = content.indexOf("\n", jsonMiddleware)
+      content = content.slice(0, lineEnd + 1) + corsUse + content.slice(lineEnd + 1)
+    } else {
+      const appCreate = content.indexOf("express()")
+      if (appCreate >= 0) {
+        const lineEnd = content.indexOf("\n", appCreate)
+        content = content.slice(0, lineEnd + 1) + "\n" + corsUse + content.slice(lineEnd + 1)
+      }
+    }
+
+    fs.writeFileSync(filePath, content)
+
+    // Install cors package if needed
+    const path = require("path")
+    const cp = require("child_process")
+    const dir = path.dirname(filePath)
+    cp.spawnSync("npm", ["install", "cors"], { cwd: dir, timeout: 15000, encoding: "utf-8" })
+  } catch {}
+}
+
+/**
+ * Auto-fix relative API URLs in frontend files.
+ * Rewrites fetch('/api/...') to fetch('http://localhost:PORT/api/...')
+ * by detecting the backend server port from server.js or server.py.
+ */
+export function autoFixApiUrls(filePath: string): void {
+  if (!filePath.includes("App.jsx") && !filePath.includes("App.js")) return
+  try {
+    const fs = require("fs")
+    const path = require("path")
+    if (!fs.existsSync(filePath)) return
+
+    let content = fs.readFileSync(filePath, "utf-8")
+    // Only fix if there are relative /api/ fetches
+    if (!content.match(/fetch\s*\(\s*['"`]\/api\//)) return
+
+    // Find backend server file by walking up directories
+    let searchDir = path.dirname(filePath)
+    // Go up from client/src to project root
+    for (let i = 0; i < 5; i++) {
+      const serverJs = path.join(searchDir, "server.js")
+      const serverPy = path.join(searchDir, "server.py")
+      if (fs.existsSync(serverJs)) {
+        const serverContent = fs.readFileSync(serverJs, "utf-8")
+        const portMatch = serverContent.match(/(?:PORT|port)\s*[=:]\s*(\d+)/) || serverContent.match(/listen\s*\(\s*(\d+)/)
+        const port = portMatch ? portMatch[1] : "3001"
+        content = content.replace(/fetch\s*\(\s*(['"`])\/api\//g, `fetch($1http://localhost:${port}/api/`)
+        fs.writeFileSync(filePath, content)
+        return
+      }
+      if (fs.existsSync(serverPy)) {
+        const serverContent = fs.readFileSync(serverPy, "utf-8")
+        const portMatch = serverContent.match(/port\s*[=:]\s*(\d+)/)
+        const port = portMatch ? portMatch[1] : "8000"
+        content = content.replace(/fetch\s*\(\s*(['"`])\/api\//g, `fetch($1http://localhost:${port}/api/`)
+        fs.writeFileSync(filePath, content)
+        return
+      }
+      searchDir = path.dirname(searchDir)
+    }
+  } catch {}
 }
 
 export function findBuildDir(filePath: string): string | null {

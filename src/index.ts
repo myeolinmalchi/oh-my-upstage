@@ -1,13 +1,22 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { validate, ensureDirectory, ensureImportedFiles, enforceAppLast } from "./hooks/validator"
 import { type SessionState, createState, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles } from "./hooks/coordinator"
-import { runBuild, findBuildDir, runLint, autoFixImports, smokeTestServer } from "./hooks/verifier"
+import { runBuild, findBuildDir, runLint, autoFixImports, smokeTestServer, autoFixCors, autoFixApiUrls } from "./hooks/verifier"
+import { analyzeJsx, analyzeServer } from "./hooks/analyzer"
 
 const SYSTEM_RULES = `
 # OMU Harness
 
 You must write code immediately. Do not ask questions. Do not explore unrelated files.
 When the harness gives you an error or warning, fix it before proceeding.
+
+## React Rules (CRITICAL)
+- useEffect: If App.jsx fetches data, you MUST call the fetch function inside useEffect(() => { fetchData(); }, []).
+- Empty state: Columns, lists, and containers must ALWAYS render, even when the data array is empty. Never use {array.some() && <Column />} or {array.length > 0 && <List />} to hide containers. Use .filter() or .map() for items INSIDE the container, not to hide the container itself.
+- Persistence: For client-only apps, use the useLocalStorage hook for data. Pass it as the initial state: const [items, setItems] = useLocalStorage('key', []).
+- Drag-and-drop: dataTransfer.getData() returns a STRING. If your IDs are numbers (Date.now()), use parseInt() before comparison.
+- All imported components MUST be rendered in JSX. Do not import a component and then not use it.
+- Write ALL files listed in the requirements. Do not skip server files.
 `
 
 const OMUPlugin: Plugin = async (ctx) => {
@@ -59,6 +68,21 @@ const OMUPlugin: Plugin = async (ctx) => {
 
           // Lint only after all files are complete (not per-file)
           // Per-file lint blocks progress on multi-file projects
+
+          // Static analysis on written file
+          const fileContent = args?.content || ""
+          const jsxWarnings = analyzeJsx(filePath, fileContent)
+          const serverWarnings = analyzeServer(filePath, fileContent)
+          const allWarnings = [...jsxWarnings, ...serverWarnings]
+          if (allWarnings.length > 0) {
+            output.output += `\n\n🛑 [OMU] CODE ISSUES DETECTED:\n${allWarnings.map(w => "- " + w).join("\n")}\nFix these issues by rewriting the file with the write tool.`
+          }
+
+          // Auto-fix CORS for Express servers
+          autoFixCors(filePath)
+
+          // Auto-fix relative API URLs in frontend
+          autoFixApiUrls(filePath)
 
           // Smoke test server files
           const serverMsg = smokeTestServer(filePath)
