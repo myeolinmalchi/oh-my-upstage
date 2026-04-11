@@ -155,6 +155,46 @@ export function autoFixImports(appJsxPath: string, componentFiles: string[]): vo
   } catch {}
 }
 
+/**
+ * After writing a Python server file (FastAPI/Express), start it and test CRUD endpoints.
+ */
+export function smokeTestServer(filePath: string): string | null {
+  if (!filePath.endsWith("server.py") && !filePath.endsWith("server.js")) return null
+  try {
+    const cp = require("child_process")
+    const isFastAPI = filePath.endsWith(".py")
+    const port = isFastAPI ? 19980 : 19981
+
+    // Start server
+    const cmd = isFastAPI
+      ? ["python3", "-c", `import uvicorn; import importlib.util; spec=importlib.util.spec_from_file_location('s','${filePath}'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); uvicorn.run(m.app,port=${port})`]
+      : ["node", filePath]
+
+    const proc = cp.spawn(cmd[0], cmd.slice(1), { stdio: "ignore", detached: true, env: { ...process.env, PORT: String(port) } })
+    cp.spawnSync("sleep", ["2"])
+
+    const errors: string[] = []
+    // Test POST
+    const postRes = cp.spawnSync("curl", ["-s", "-w", "%{http_code}", "-X", "POST", `http://localhost:${port}/api/transactions/`, "-H", "Content-Type: application/json", "-d", '{"amount":100,"type":"income","category":"test","description":"test","date":"2026-01-01"}'], { timeout: 5000, encoding: "utf-8" })
+    if (!postRes.stdout?.includes("200") && !postRes.stdout?.includes("201")) {
+      errors.push(`POST /api/transactions/ returned: ${postRes.stdout?.slice(-3)}`)
+    }
+
+    // Test GET
+    const getRes = cp.spawnSync("curl", ["-s", "-w", "%{http_code}", `http://localhost:${port}/api/transactions/`], { timeout: 5000, encoding: "utf-8" })
+    if (!getRes.stdout?.includes("200")) {
+      errors.push(`GET /api/transactions/ returned: ${getRes.stdout?.slice(-3)}`)
+    }
+
+    try { process.kill(-proc.pid!) } catch {}
+
+    if (errors.length > 0) {
+      return `\n\n🛑 [OMU] API SMOKE TEST FAILED:\n${errors.join("\n")}\nFix the server endpoints and ensure CRUD works.`
+    }
+  } catch {}
+  return null
+}
+
 export function findBuildDir(filePath: string): string | null {
   try {
     const path = require("path")

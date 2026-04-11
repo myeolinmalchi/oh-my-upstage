@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { validate, ensureDirectory, ensureImportedFiles, enforceAppLast } from "./hooks/validator"
 import { type SessionState, createState, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles } from "./hooks/coordinator"
-import { runBuild, findBuildDir, runLint, autoFixImports } from "./hooks/verifier"
+import { runBuild, findBuildDir, runLint, autoFixImports, smokeTestServer } from "./hooks/verifier"
 
 const SYSTEM_RULES = `
 # OMU Harness
@@ -59,6 +59,10 @@ const OMUPlugin: Plugin = async (ctx) => {
 
           // Lint only after all files are complete (not per-file)
           // Per-file lint blocks progress on multi-file projects
+
+          // Smoke test server files
+          const serverMsg = smokeTestServer(filePath)
+          if (serverMsg) output.output += serverMsg
 
           // If App.jsx was written before components, tell model to write components first then rewrite App.jsx
           if (filePath.endsWith("App.jsx")) {
