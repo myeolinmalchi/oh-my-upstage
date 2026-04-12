@@ -245,7 +245,7 @@ export function forceJsx(tool: string, args: any): void {
     // Strip parameter type annotations: (param: Type) but not destructuring
     c = c.replace(/(\w)\s*:\s*(?:string|number|boolean|any|void|[A-Z]\w+(?:\[\])?)\s*(?=[,\)\=\n;])/g, "$1")
     // Strip interface/type blocks
-    c = c.replace(/interface\s+\w+\s*\{[^}]*\}/g, "")
+    c = c.replace(/interface\s+\w+\s*\{[^\n}]*\}/g, "")
     c = c.replace(/type\s+\w+\s*=\s*[^;]+;/g, "")
     if (c !== args.content) args.content = c
   }
@@ -611,7 +611,7 @@ export function fixInfiniteUseEffect(tool: string, args: any): void {
 
     const block = lines.slice(start, end + 1).join("\n")
     const setterMatch = block.match(/\bset([A-Z]\w*)\s*\(/)
-    const depMatch = block.match(/\]\s*,\s*\[(\w+)\]\s*\)/)
+    const depMatch = block.match(/[}\]]\s*,\s*\[(\w+)\]\s*\)/)
     if (setterMatch && depMatch) {
       const setterTarget = setterMatch[1].toLowerCase()
       const depVar = depMatch[1].toLowerCase()
