@@ -340,18 +340,41 @@ export function ensurePersistence(tool: string, args: any): void {
 }
 
 /**
- * Fix CSS class names: habit-card → habit-item for list items.
- * Ensures playwright selectors (.habit-item) match the generated code.
+ * Ensure list items rendered in .map() have a semantic CSS class: {itemName}-item.
+ * Generic: works for any data type (habit, recipe, workout, task, etc.)
  */
-export function fixHabitItemClass(tool: string, args: any): void {
+export function ensureListItemClass(tool: string, args: any): void {
   if (tool !== "write" || !args?.content || !args?.filePath) return
   if (!args.filePath.endsWith(".jsx") && !args.filePath.endsWith(".js")) return
   let content = args.content as string
-  // Replace habit-card with habit-item in className attributes
-  if (content.includes("habit-card")) {
-    content = content.replace(/habit-card/g, "habit-item")
-    args.content = content
+  if (!content.includes(".map(")) return
+
+  // Extract the map callback variable name: items.map((item) => ...)
+  const mapMatch = content.match(/(\w+)\.map\(\s*\(?(\w+)/)
+  if (!mapMatch) return
+  const itemVar = mapMatch[2]  // e.g., "habit", "recipe", "task"
+  const itemClass = `${itemVar}-item`
+
+  if (content.includes(itemClass)) return  // already has it
+
+  // Add itemClass to the first element inside .map()
+  // Case 1: element has className already — prepend
+  const classNameInMap = new RegExp(
+    `\\.map\\([^)]*\\)\\s*=>\\s*\\(?\\s*<(\\w+)\\s+([^>]*className=)(["'{])([^"'}]*)\\3`,
+    "s"
+  )
+  const m1 = content.match(classNameInMap)
+  if (m1 && !m1[4].includes(itemClass)) {
+    content = content.replace(m1[0], m1[0].replace(m1[4], `${itemClass} ${m1[4]}`))
+  } else if (!m1) {
+    // Case 2: element has no className — add it
+    content = content.replace(
+      /\.map\(\s*\(?\w+(?:\s*,\s*\w+)?\)?\s*=>\s*\(?\s*<(\w+)\b(?!\s+className)/,
+      (match, tag) => match.replace(`<${tag}`, `<${tag} className="${itemClass}"`)
+    )
   }
+
+  if (content !== args.content) args.content = content
 }
 
 /**
@@ -366,9 +389,12 @@ export function fixCallbackProps(tool: string, args: any): void {
   let content = args.content as string
 
   // Detect: this component receives a destructured prop like { habit, ... } or { item, ... }
-  const propsMatch = content.match(/\(\s*\{\s*(\w+)\s*,/)
+  // Skip on-prefixed props to find the data variable (habit, item, etc.)
+  const propsMatch = content.match(/\(\s*\{\s*([^}]+)\}/)
   if (!propsMatch) return
-  const itemVar = propsMatch[1]  // e.g., "habit" or "item"
+  const allProps = propsMatch[1].split(",").map((p: string) => p.trim().split("=")[0].split(":")[0].trim()).filter(Boolean)
+  const itemVar = allProps.find((p: string) => !p.startsWith("on") && p !== "children" && p !== "className" && p !== "key")
+  if (!itemVar) return
 
   // Fix onClick={onXxx} → onClick={() => onXxx(habit.id)}
   // Only for on-prefixed callback props (onDelete, onToggle, onUpdate, etc.)

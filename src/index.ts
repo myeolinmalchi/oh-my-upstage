@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { validate, ensureDirectory, ensureImportedFiles, stripCodeFences, fixClientPath, blockDestructive, forceJsx, stripUninstalledImports, fixReactImports, fixDuplicateExports, fixBracketCallSyntax, stripTypeScriptImports, fixLocalStorageInit, fixMissingDefaultExport, fixHabitItemClass, fixCallbackProps, ensurePersistence } from "./hooks/validator.js"
+import { validate, ensureDirectory, ensureImportedFiles, stripCodeFences, fixClientPath, blockDestructive, forceJsx, stripUninstalledImports, fixReactImports, fixDuplicateExports, fixBracketCallSyntax, stripTypeScriptImports, fixLocalStorageInit, fixMissingDefaultExport, fixCallbackProps, ensurePersistence, ensureListItemClass } from "./hooks/validator.js"
 import { type SessionState, type Phase, createState, transition, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles, PHASE_PROMPTS } from "./hooks/coordinator.js"
 import { autoFixImports, autoFixCors, autoFixApiUrls, autoFixProps } from "./hooks/verifier.js"
 import { analyzeJsx, analyzeServer } from "./hooks/analyzer.js"
@@ -12,11 +12,11 @@ You are a coding agent. Write working code immediately. Do not ask questions.
 When the harness gives you an error or warning, fix it before proceeding.
 
 ## Language & UI
-- All UI text (headings, buttons, labels, placeholders) MUST be in the SAME LANGUAGE as the user prompt. Korean prompt → Korean UI.
+- All UI text MUST match the language of the user prompt. Korean prompt → Korean UI.
 - Delete buttons: use ✕ character.
-- Each list item: MUST use className="habit-item" (NOT "habit-card" or other names).
-- Streak display: MUST show label "스트릭: {count}일" (NOT just a number).
-- Toggle buttons: show "미완료" (not done) or "완료" (done).
+- List items rendered in .map(): the outermost element MUST have a CSS class "{itemName}-item" (e.g., habit-item, recipe-item).
+- Toggle buttons: use text labels in the prompt language, NOT emoji (no ✅❌☑☐).
+- Numeric displays: include a label (e.g., "스트릭: 3일", NOT just "3").
 
 ## React Patterns
 - Client-only persistence: use useState with lazy initializer: const [items, setItems] = useState(() => { const s = localStorage.getItem('key'); return s ? JSON.parse(s) : []; }). Save with useEffect on [items]. Do NOT load in a separate useEffect.
@@ -178,9 +178,9 @@ const OMUPlugin: Plugin = async (ctx) => {
         stripTypeScriptImports(tool, output.args)
         fixLocalStorageInit(tool, output.args)
         fixMissingDefaultExport(tool, output.args)
-        fixHabitItemClass(tool, output.args)
         fixCallbackProps(tool, output.args)
         ensurePersistence(tool, output.args)
+        ensureListItemClass(tool, output.args)
 
         // Phase transitions
         if (state.phase === "UNDERSTAND" && tool === "write") {
