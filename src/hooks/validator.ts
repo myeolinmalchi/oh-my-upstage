@@ -236,6 +236,19 @@ export function forceJsx(tool: string, args: any): void {
         .replace(/:\s*(string|number|boolean|any|void|\{[^}]*\})\s*(?=[,\)\=\n;])/g, "")
     }
   }
+
+  // Also strip TypeScript syntax from .js/.jsx files (Solar sometimes writes TS in JS)
+  if ((fp.endsWith(".jsx") || fp.endsWith(".js")) && args.content) {
+    let c = args.content as string
+    // Strip return type annotations: (): Type => or (): Type[] =>
+    c = c.replace(/\)\s*:\s*[A-Z]\w+(?:\[\])?\s*(?:=>)/g, ") =>")
+    // Strip parameter type annotations: (param: Type) but not destructuring
+    c = c.replace(/(\w)\s*:\s*(?:string|number|boolean|any|void|[A-Z]\w+(?:\[\])?)\s*(?=[,\)\=\n;])/g, "$1")
+    // Strip interface/type blocks
+    c = c.replace(/interface\s+\w+\s*\{[^}]*\}/g, "")
+    c = c.replace(/type\s+\w+\s*=\s*[^;]+;/g, "")
+    if (c !== args.content) args.content = c
+  }
 }
 
 /**
