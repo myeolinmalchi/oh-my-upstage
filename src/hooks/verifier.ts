@@ -273,7 +273,7 @@ export function autoFixCors(filePath: string): void {
  * by detecting the backend server port from server.js or server.py.
  */
 export function autoFixApiUrls(filePath: string): void {
-  if (!filePath.includes("App.jsx") && !filePath.includes("App.js")) return
+  if (!filePath.endsWith(".jsx") && !filePath.endsWith(".js")) return
   try {
     const fs = require("fs")
     const path = require("path")
