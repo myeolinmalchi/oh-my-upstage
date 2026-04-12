@@ -1,6 +1,9 @@
 # OMU (Oh My Upstage)
 
-Solar Pro 3를 위한 OpenCode 하네스 플러그인
+<img width="2598" height="1176" alt="image" src="https://github.com/user-attachments/assets/088d795c-7305-433a-9e23-b57771d02a88" />
+
+
+**Solar Pro 3를 위한 OpenCode 하네스 플러그인**
 
 Solar Pro 3에 "레시피 북 앱을 만들어줘"라고 시키면, 플러그인 없이는 빌드가 안 됩니다. 파일을 작성하지는 않고 폴더 탐색만 무한히 하거나, 컴포넌트 파일을 만들고 import를 안 하거나, 빌드를 무시합니다. OMU와 함께라면 동일한 프롬프트에서 빌드되고 동작하는 앱이 나옵니다.
 
