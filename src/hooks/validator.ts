@@ -22,7 +22,7 @@ export function validate(tool: string, args: any): string | null {
 
   // Protect scaffold files — preserve original content by replacing args
   if (tool === "write" && args?.filePath) {
-    const protectedFiles = ["main.jsx", "main.tsx", "index.html", "vite.config.js"]
+    const protectedFiles = ["main.jsx", "main.tsx", "index.html", "vite.config.js", "index.css"]
     const basename = require("path").basename(args.filePath)
     if (protectedFiles.includes(basename)) {
       try {
@@ -302,6 +302,10 @@ export function blockDestructive(tool: string, args: any): void {
   const cmd = args.command as string
   if (cmd.match(/rm\s.*\.(opencode|env)/)) {
     args.command = "echo '[OMU] BLOCKED: Cannot delete .opencode or .env'"
+  }
+  // Block deletion of scaffold files
+  if (cmd.match(/rm\s.*\b(main\.jsx|index\.css|index\.html|vite\.config\.js)\b/)) {
+    args.command = "echo '[OMU] BLOCKED: Cannot delete scaffold files.'"
   }
 }
 

@@ -300,8 +300,8 @@ const OMUPlugin: Plugin = async (ctx) => {
           if (tool === "bash" && args?.command) {
             const cmd = args.command as string
             if (cmd.includes("npm run build") || cmd.includes("vite build")) {
-              // Fix #16: Detect wrong build target (tsc instead of vite build)
-              if (output.output.includes("> tsc") && !output.output.includes("vite")) {
+              // Fix #16: Detect wrong build target (tsc instead of vite build, or missing script)
+              if ((output.output.includes("> tsc") && !output.output.includes("vite")) || output.output.includes("Missing script")) {
                 try {
                   const fs = require("fs")
                   const path = require("path")
@@ -354,6 +354,25 @@ const OMUPlugin: Plugin = async (ctx) => {
           if (tool === "bash" && args?.command) {
             const cmd = args.command as string
             if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+              // Also redirect wrong build target in ITERATE phase
+              if ((output.output.includes("> tsc") && !output.output.includes("vite")) || output.output.includes("Missing script")) {
+                try {
+                  const fs = require("fs")
+                  const path = require("path")
+                  const clientPkg = path.join(process.cwd(), "client", "package.json")
+                  if (fs.existsSync(clientPkg)) {
+                    const cp = require("child_process")
+                    fixScaffoldApp()
+                    runAutoFixImports()
+                    const result = cp.spawnSync("npm", ["run", "build"], { cwd: path.join(process.cwd(), "client"), timeout: 30000, encoding: "utf-8" })
+                    if (result.status === 0) {
+                      transition(state, "DONE")
+                      output.output = result.stdout + `\n\n✅ ${phaseTag} Client build passed. Task complete.`
+                      return
+                    }
+                  }
+                } catch {}
+              }
               if (output.output.includes("built in") || output.output.includes("Build passed")) {
                 transition(state, "DONE")
                 output.output += `\n\n✅ ${phaseTag} Build passed. Task complete.`
