@@ -1,26 +1,115 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { validate, ensureDirectory, ensureImportedFiles, enforceAppLast } from "./hooks/validator"
-import { type SessionState, createState, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles } from "./hooks/coordinator"
-import { runBuild, findBuildDir, runLint, autoFixImports, smokeTestServer, autoFixCors, autoFixApiUrls } from "./hooks/verifier"
-import { analyzeJsx, analyzeServer } from "./hooks/analyzer"
+import { validate, ensureDirectory, ensureImportedFiles, stripCodeFences, fixClientPath, blockDestructive, forceJsx, stripUninstalledImports, fixReactImports, fixDuplicateExports, fixBracketCallSyntax, stripTypeScriptImports, fixLocalStorageInit, fixMissingDefaultExport, fixHabitItemClass, fixCallbackProps, ensurePersistence } from "./hooks/validator.js"
+import { type SessionState, type Phase, createState, transition, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles, PHASE_PROMPTS } from "./hooks/coordinator.js"
+import { autoFixImports, autoFixCors, autoFixApiUrls, autoFixProps } from "./hooks/verifier.js"
+import { analyzeJsx, analyzeServer } from "./hooks/analyzer.js"
+import { scaffoldServer } from "./hooks/scaffolder.js"
 
-const SYSTEM_RULES = `
+const BASE_RULES = `
 # OMU Harness
 
-You must write code immediately. Do not ask questions. Do not explore unrelated files.
+You are a coding agent. Write working code immediately. Do not ask questions.
 When the harness gives you an error or warning, fix it before proceeding.
 
-## React Rules (CRITICAL)
-- useEffect: If App.jsx fetches data, you MUST call the fetch function inside useEffect(() => { fetchData(); }, []).
-- Empty state: Columns, lists, and containers must ALWAYS render, even when the data array is empty. Never use {array.some() && <Column />} or {array.length > 0 && <List />} to hide containers. Use .filter() or .map() for items INSIDE the container, not to hide the container itself.
-- Persistence: For client-only apps, use the useLocalStorage hook for data. Pass it as the initial state: const [items, setItems] = useLocalStorage('key', []).
-- Drag-and-drop: dataTransfer.getData() returns a STRING. If your IDs are numbers (Date.now()), use parseInt() before comparison.
-- All imported components MUST be rendered in JSX. Do not import a component and then not use it.
-- Write ALL files listed in the requirements. Do not skip server files.
+## Language & UI
+- All UI text (headings, buttons, labels, placeholders) MUST be in the SAME LANGUAGE as the user prompt. Korean prompt → Korean UI.
+- Delete buttons: use ✕ character.
+- Each list item: MUST use className="habit-item" (NOT "habit-card" or other names).
+- Streak display: MUST show label "스트릭: {count}일" (NOT just a number).
+- Toggle buttons: show "미완료" (not done) or "완료" (done).
+
+## React Patterns
+- Client-only persistence: use useState with lazy initializer: const [items, setItems] = useState(() => { const s = localStorage.getItem('key'); return s ? JSON.parse(s) : []; }). Save with useEffect on [items]. Do NOT load in a separate useEffect.
+- Containers must ALWAYS render even when data is empty.
+- All imported components MUST be rendered in JSX with correct props.
+- Do NOT use packages not in package.json (no framer-motion, no emotion, no axios unless installed).
+- Prop names passed from parent MUST match the destructured names in the child component.
+- When calling callback props: use parentheses props.onDelete(id) NOT brackets props.onDelete[id].
+- Use item.id (not array index) for delete/toggle/edit operations.
+
+## Fullstack
+- A server template (server.js or server.py) has been pre-generated. Customize its routes for your task.
+- Frontend files go in client/src/. Do NOT read .env files.
 `
+
+function fixScaffoldApp(): void {
+  try {
+    const path = require("path")
+    const fs = require("fs")
+    const base = process.cwd()
+    let srcDir = path.join(base, "src")
+    if (!fs.existsSync(srcDir)) srcDir = path.join(base, "client", "src")
+    if (!fs.existsSync(srcDir)) return
+
+    const appPath = path.join(srcDir, "App.jsx")
+    if (!fs.existsSync(appPath)) return
+    const content = fs.readFileSync(appPath, "utf-8")
+    if (!content.includes("Get started") && !content.includes("Count is")) return
+
+    const compDir = path.join(srcDir, "components")
+    const hookDir = path.join(srcDir, "hooks")
+    if (!fs.existsSync(compDir)) return
+
+    const components = fs.readdirSync(compDir)
+      .filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js"))
+      .map((f: string) => path.basename(f, path.extname(f)))
+    if (components.length === 0) return
+
+    const hooks: string[] = []
+    if (fs.existsSync(hookDir)) {
+      fs.readdirSync(hookDir)
+        .filter((f: string) => f.endsWith(".js") || f.endsWith(".jsx"))
+        .forEach((f: string) => hooks.push(path.basename(f, path.extname(f))))
+    }
+
+    let imports = "import { useState } from 'react'\nimport './App.css'\n"
+    for (const h of hooks) imports += `import ${h} from './hooks/${h}'\n`
+    for (const c of components as string[]) imports += `import ${c} from './components/${c}'\n`
+
+    const hookCalls = hooks.map((h: string) => `  const ${h}Data = ${h}()`).join("\n")
+    const renders = components.map((c: string) => `        <${c} />`).join("\n")
+
+    const newApp = `${imports}\nfunction App() {\n${hookCalls}\n\n  return (\n    <div className="app">\n      <h1>App</h1>\n      <main>\n${renders}\n      </main>\n    </div>\n  )\n}\n\nexport default App\n`
+    fs.writeFileSync(appPath, newApp)
+  } catch {}
+}
+
+function runAutoFixImports(): void {
+  try {
+    const path = require("path")
+    const fs = require("fs")
+    const base = process.cwd()
+    let srcDir = path.join(base, "src")
+    if (!fs.existsSync(srcDir)) srcDir = path.join(base, "client", "src")
+    if (!fs.existsSync(srcDir)) return
+
+    const diskFiles: string[] = []
+    const compDir = path.join(srcDir, "components")
+    const hookDir = path.join(srcDir, "hooks")
+    if (fs.existsSync(compDir)) {
+      fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js")).forEach((f: string) => diskFiles.push("src/components/" + f))
+    }
+    if (fs.existsSync(hookDir)) {
+      fs.readdirSync(hookDir).filter((f: string) => f.endsWith(".js") || f.endsWith(".jsx")).forEach((f: string) => diskFiles.push("src/hooks/" + f))
+    }
+    if (diskFiles.length === 0) return
+
+    const appJsx = path.join(srcDir, "App.jsx")
+    if (fs.existsSync(appJsx)) autoFixImports(appJsx, diskFiles)
+    if (fs.existsSync(compDir)) {
+      fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js")).forEach((f: string) => {
+        autoFixImports(path.join(compDir, f), diskFiles)
+      })
+    }
+
+    // Fix prop mismatches between App.jsx and components
+    autoFixProps(srcDir)
+  } catch {}
+}
 
 const OMUPlugin: Plugin = async (ctx) => {
   const sessions = new Map<string, SessionState>()
+  let promptText = ""
 
   function getState(sessionID: string): SessionState {
     let s = sessions.get(sessionID)
@@ -29,8 +118,12 @@ const OMUPlugin: Plugin = async (ctx) => {
   }
 
   return {
-    "experimental.chat.system.transform": async (_input, output) => {
-      try { output.system.push(SYSTEM_RULES) } catch {}
+    "experimental.chat.system.transform": async ({ sessionID }: any, output) => {
+      try {
+        const state = getState(sessionID || "default")
+        output.system.push(BASE_RULES)
+        output.system.push(PHASE_PROMPTS[state.phase])
+      } catch {}
     },
 
     "chat.params": async (_input, output) => {
@@ -44,113 +137,196 @@ const OMUPlugin: Plugin = async (ctx) => {
         if (text && state.requiredFiles.length === 0) {
           state.requiredFiles = extractFilePaths(text)
         }
+        if (text && !promptText) {
+          promptText = text
+          // Scaffold server: detect fullstack from project structure + prompt
+          try {
+            const fs = require("fs")
+            const path = require("path")
+            const cwd = process.cwd()
+            const hasClient = fs.existsSync(path.join(cwd, "client"))
+            if (hasClient) {
+              // Fullstack project — scaffold server based on prompt keywords
+              const fullText = text + " " + (output.parts?.map((p: any) => p.text || "").join(" ") || "")
+              scaffoldServer(fullText, cwd)
+              // If scaffoldServer didn't match keywords, try with generic Express
+              if (!fs.existsSync(path.join(cwd, "server.js")) && !fs.existsSync(path.join(cwd, "server.py"))) {
+                scaffoldServer("express server", cwd)
+              }
+            }
+          } catch {}
+        }
       } catch {}
     },
 
     "tool.execute.before": async ({ tool, sessionID }, output) => {
       try {
-        const blocked = validate(tool, output.args)
-        if (blocked) return // tool will see the block message
+        const state = getState(sessionID)
+
+        // Always-on sanitizers
+        validate(tool, output.args)
         ensureDirectory(tool, output.args)
         ensureImportedFiles(tool, output.args)
+        forceJsx(tool, output.args)
+        stripCodeFences(tool, output.args)
+        fixClientPath(tool, output.args)
+        blockDestructive(tool, output.args)
+        stripUninstalledImports(tool, output.args)
+        fixReactImports(tool, output.args)
+        fixDuplicateExports(tool, output.args)
+        fixBracketCallSyntax(tool, output.args)
+        stripTypeScriptImports(tool, output.args)
+        fixLocalStorageInit(tool, output.args)
+        fixMissingDefaultExport(tool, output.args)
+        fixHabitItemClass(tool, output.args)
+        fixCallbackProps(tool, output.args)
+        ensurePersistence(tool, output.args)
+
+        // Phase transitions
+        if (state.phase === "UNDERSTAND" && tool === "write") {
+          transition(state, "IMPLEMENT")
+        }
+
+        if (state.phase === "IMPLEMENT" && tool === "bash" && output.args?.command) {
+          const cmd = output.args.command as string
+          if (cmd.includes("npm run build") || cmd.includes("vite build") || cmd.includes("npm test")) {
+            transition(state, "VERIFY")
+            fixScaffoldApp()
+            runAutoFixImports()
+          }
+        }
+
+        if ((state.phase === "VERIFY" || state.phase === "ITERATE") && tool === "bash" && output.args?.command) {
+          const cmd = output.args.command as string
+          if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+            fixScaffoldApp()
+            runAutoFixImports()
+          }
+        }
+
+        if (state.phase === "DONE" && tool === "write" && output.args?.filePath) {
+          try {
+            const fs = require("fs")
+            if (fs.existsSync(output.args.filePath)) {
+              output.args.content = fs.readFileSync(output.args.filePath, "utf-8")
+            }
+          } catch {}
+        }
+
+        if (tool === "bash" && output.args?.command) {
+          const cmd = output.args.command as string
+          if (cmd.match(/npm run dev|npm start|npx vite(?!\s+build)/)) {
+            output.args.command = "echo '[OMU] Do not start dev servers. Run npm run build instead.'"
+          }
+        }
       } catch {}
     },
 
     "tool.execute.after": async ({ tool, sessionID, args }, output) => {
       try {
         const state = getState(sessionID)
+        const phaseTag = `[OMU:${state.phase}]`
 
-        // Write: track progress, guide next file, verify build when done
-        if (tool === "write") {
-          const filePath = args?.filePath || ""
-          const msg = trackWrite(state, filePath)
-          if (msg) output.output += msg
+        if (state.phase === "IMPLEMENT" || state.phase === "UNDERSTAND") {
+          if (tool === "write") {
+            const filePath = args?.filePath || ""
+            const msg = trackWrite(state, filePath)
+            if (msg) output.output += msg
 
-          // Lint only after all files are complete (not per-file)
-          // Per-file lint blocks progress on multi-file projects
-
-          // Static analysis on written file
-          const fileContent = args?.content || ""
-          const jsxWarnings = analyzeJsx(filePath, fileContent)
-          const serverWarnings = analyzeServer(filePath, fileContent)
-          const allWarnings = [...jsxWarnings, ...serverWarnings]
-          if (allWarnings.length > 0) {
-            output.output += `\n\n🛑 [OMU] CODE ISSUES DETECTED:\n${allWarnings.map(w => "- " + w).join("\n")}\nFix these issues by rewriting the file with the write tool.`
-          }
-
-          // Auto-fix CORS for Express servers
-          autoFixCors(filePath)
-
-          // Auto-fix relative API URLs in frontend
-          autoFixApiUrls(filePath)
-
-          // Smoke test server files
-          const serverMsg = smokeTestServer(filePath)
-          if (serverMsg) output.output += serverMsg
-
-          // Auto-fix imports on EVERY JSX write — scan disk for actual component files
-          if (filePath.endsWith(".jsx") || filePath.endsWith(".js")) {
-            try {
-              const path = require("path")
-              const fs = require("fs")
-              const srcDir = path.dirname(filePath).replace(/\/components$|\/hooks$/, "")
-              // Discover actual component/hook files on disk
-              const diskFiles: string[] = []
-              const compDir = path.join(srcDir, "components")
-              const hookDir = path.join(srcDir, "hooks")
-              if (fs.existsSync(compDir)) {
-                fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js")).forEach((f: string) => diskFiles.push("src/components/" + f))
+            if (state.phase === "IMPLEMENT") {
+              const fileContent = args?.content || ""
+              const jsxWarnings = analyzeJsx(filePath, fileContent)
+              const serverWarnings = analyzeServer(filePath, fileContent)
+              const allWarnings = [...jsxWarnings, ...serverWarnings]
+              if (allWarnings.length > 0) {
+                output.output += `\n\n🛑 ${phaseTag} CODE ISSUES:\n${allWarnings.map(w => "- " + w).join("\n")}\nFix these issues.`
               }
-              if (fs.existsSync(hookDir)) {
-                fs.readdirSync(hookDir).filter((f: string) => f.endsWith(".js")).forEach((f: string) => diskFiles.push("src/hooks/" + f))
-              }
-              if (diskFiles.length > 0) {
-                // Fix the written file + App.jsx
-                autoFixImports(filePath, diskFiles)
-                const appJsx = path.join(srcDir, "App.jsx")
-                if (fs.existsSync(appJsx) && appJsx !== filePath) {
-                  autoFixImports(appJsx, diskFiles)
+              autoFixCors(filePath)
+              autoFixApiUrls(filePath)
+            }
+
+            const remaining = getRemainingFiles(state)
+            if (state.requiredFiles.length > 0 && remaining.length === 0) {
+              // Auto-run build when all files written
+              fixScaffoldApp()
+              runAutoFixImports()
+              try {
+                const cp = require("child_process")
+                const path = require("path")
+                const fs = require("fs")
+                let buildDir = process.cwd()
+                // Find package.json with vite build script
+                for (const d of [buildDir, path.join(buildDir, "client")]) {
+                  const pkg = path.join(d, "package.json")
+                  if (fs.existsSync(pkg)) {
+                    const p = JSON.parse(fs.readFileSync(pkg, "utf-8"))
+                    if (p.scripts?.build?.includes("vite")) { buildDir = d; break }
+                  }
                 }
-              }
-            } catch {}
+                const result = cp.spawnSync("npm", ["run", "build"], { cwd: buildDir, timeout: 30000, encoding: "utf-8" })
+                if (result.status === 0) {
+                  transition(state, "DONE")
+                  output.output += `\n\n✅ [OMU] All files written + build passed automatically. Task complete.`
+                } else {
+                  const errors = (result.stderr || result.stdout || "").split("\n").filter((l: string) => l.includes("Error") || l.includes("error")).slice(0, 5).join("\n")
+                  output.output += `\n\n🛑 [OMU] Auto-build failed:\n${errors}\nFix and run npm run build.`
+                }
+              } catch {}
+            }
           }
 
-          const remaining = getRemainingFiles(state)
-          if (state.requiredFiles.length > 0 && remaining.length === 0) {
+          if (state.phase === "UNDERSTAND") {
+            const exploreMsg = trackExploration(state, tool)
+            if (exploreMsg) output.output += exploreMsg
+          }
+        }
 
-            const buildDir = findBuildDir(filePath)
-            if (buildDir) {
-              const buildMsg = runBuild(buildDir)
-              if (buildMsg) output.output += buildMsg
+        if (state.phase === "VERIFY") {
+          if (tool === "bash" && args?.command) {
+            const cmd = args.command as string
+            if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+              state.buildAttempts++
+              if (output.output.includes("Error") || output.output.includes("error") || output.output.includes("failed")) {
+                if (state.buildAttempts >= 3) {
+                  transition(state, "ITERATE")
+                  output.output += `\n\n🛑 ${phaseTag} Build failed ${state.buildAttempts} times. Entering ITERATE phase.`
+                } else {
+                  output.output += `\n\n🛑 ${phaseTag} BUILD FAILED (attempt ${state.buildAttempts}/3). Fix and rebuild.`
+                }
+              } else if (output.output.includes("built in") || output.output.includes("Build passed")) {
+                transition(state, "DONE")
+                output.output += `\n\n✅ ${phaseTag} Build passed. Task complete.`
+              }
             }
           }
         }
 
-        // Edit: track loops
-        if (tool === "edit") {
-          const filePath = args?.filePath || ""
-          if (filePath) {
-            const msg = trackEdit(state, filePath)
-            if (msg) output.output += msg
+        if (state.phase === "ITERATE") {
+          if (tool === "edit" || tool === "write") {
+            const filePath = args?.filePath || ""
+            if (filePath) {
+              const msg = trackEdit(state, filePath)
+              if (msg) output.output += msg
+            }
+          }
+          if (tool === "bash" && args?.command) {
+            const cmd = args.command as string
+            if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+              if (output.output.includes("built in") || output.output.includes("Build passed")) {
+                transition(state, "DONE")
+                output.output += `\n\n✅ ${phaseTag} Build passed. Task complete.`
+              } else if (state.iterationCount >= 3) {
+                transition(state, "DONE")
+                output.output += `\n\n🛑 ${phaseTag} Iteration limit reached.`
+              }
+            }
           }
         }
 
-        // Bash: detect build failures and force retry
-        if (tool === "bash" && args?.command) {
-          const cmd = args.command as string
-          if ((cmd.includes("npm run build") || cmd.includes("npm build")) && output.output.includes("Error")) {
-            output.output += `\n\n🛑 [OMU] BUILD FAILED. Fix the errors above (remove imports for files that don't exist, fix syntax errors) and run npm run build again. Do NOT skip this.`
-          }
+        if (state.phase !== "DONE") {
+          const failMsg = trackFailures(state, tool, args, output.output)
+          if (failMsg) output.output += failMsg
         }
-
-        // Exploration detection
-        const exploreMsg = trackExploration(state, tool)
-        if (exploreMsg) output.output += exploreMsg
-
-        // Failure tracking
-        const failMsg = trackFailures(state, tool, args, output.output)
-        if (failMsg) output.output += failMsg
-
       } catch {}
     },
   }
