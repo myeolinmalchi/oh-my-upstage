@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/mason/workspace/upstage-ambassador/omu/.claude/hooks/post-opencode.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

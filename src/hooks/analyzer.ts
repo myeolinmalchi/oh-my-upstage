@@ -10,6 +10,17 @@ export function analyzeJsx(filePath: string, content: string): string[] {
   const isAppFile = filePath.includes("App.jsx") || filePath.includes("App.js")
   const isComponent = filePath.includes("components/")
 
+  // 0. App.jsx: custom hook imported but never called
+  if (isAppFile) {
+    const hookImports = content.match(/import\s+(\w+)\s+from\s+['"]\.\/hooks\/[^'"]+['"]/g) || []
+    for (const imp of hookImports) {
+      const name = imp.match(/import\s+(\w+)/)?.[1]
+      if (name && !content.includes(`${name}(`)) {
+        warnings.push(`Imported '${name}' from hooks but never called it. Add: const { ... } = ${name}() at the top of your component function.`)
+      }
+    }
+  }
+
   // 1. App.jsx: fetch defined but no useEffect
   if (isAppFile) {
     const hasFetch = content.includes("fetch(") || content.includes("axios.")
@@ -39,13 +50,20 @@ export function analyzeJsx(filePath: string, content: string): string[] {
     }
   }
 
-  // 4. useState but no persistence — custom hook not used
-  if (isAppFile || filePath.includes("Board")) {
-    const hasUseState = content.includes("useState([])") || content.includes("useState([])")
-    const hasLocalStorage = content.includes("localStorage") || content.includes("useLocalStorage")
-    const hasFetch = content.includes("fetch(")
-    if (hasUseState && !hasLocalStorage && !hasFetch) {
-      warnings.push("Data initialized with useState([]) but no persistence (localStorage or API fetch). Data will be lost on reload. Use useLocalStorage hook or fetch from API.")
+  // 4. Direct localStorage usage when useLocalStorage hook exists
+  if (isAppFile) {
+    const usesDirectLocalStorage = content.includes("localStorage.getItem") || content.includes("localStorage.setItem")
+    const usesHook = content.includes("useLocalStorage")
+    if (usesDirectLocalStorage && !usesHook) {
+      try {
+        const path = require("path")
+        const fs = require("fs")
+        const hookDir = path.join(path.dirname(filePath), "hooks")
+        const hookExists = fs.existsSync(hookDir) && fs.readdirSync(hookDir).some((f: string) => f.includes("useLocalStorage"))
+        if (hookExists) {
+          warnings.push("App.jsx uses localStorage directly but a useLocalStorage hook file exists. Use the hook instead — direct localStorage with useEffect causes a race condition that overwrites data on mount.")
+        }
+      } catch {}
     }
   }
 

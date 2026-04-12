@@ -320,3 +320,90 @@ export function findBuildDir(filePath: string): string | null {
   } catch {}
   return null
 }
+
+/**
+ * Auto-fix prop name mismatches between App.jsx and component files.
+ * Runs before build. Reads App.jsx to find passed props, reads each component
+ * to find destructured props, and renames mismatched props in the component.
+ */
+export function autoFixProps(srcDir: string): void {
+  try {
+    const fs = require("fs")
+    const path = require("path")
+
+    const appPath = path.join(srcDir, "App.jsx")
+    if (!fs.existsSync(appPath)) return
+
+    const appContent = fs.readFileSync(appPath, "utf-8")
+    const compDir = path.join(srcDir, "components")
+    if (!fs.existsSync(compDir)) return
+
+    const components = fs.readdirSync(compDir).filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js"))
+
+    for (const compFile of components) {
+      const compName = path.basename(compFile, path.extname(compFile))
+
+      // Find <CompName prop1={...} prop2={...} /> in App.jsx
+      const compRegex = new RegExp(`<${compName}\\s+([^>]+?)\\s*(?:/>|>)`, "s")
+      const match = appContent.match(compRegex)
+      if (!match) continue
+
+      // Extract prop names passed from App.jsx
+      const propsStr = match[1]
+      const passedProps = [...propsStr.matchAll(/(\w+)\s*[={]/g)].map((m: any) => m[1])
+        .filter((p: string) => p !== "key" && p !== "ref" && p !== "className")
+
+      // Read component file
+      const compPath = path.join(compDir, compFile)
+      let compContent = fs.readFileSync(compPath, "utf-8")
+
+      // Find destructured props: ({ prop1, prop2 }) or ({ prop1, prop2, ...rest })
+      const destructuredMatch = compContent.match(/(?:function\s+\w+|const\s+\w+\s*=)\s*\(\s*\{([^}]+)\}\s*\)/)
+      if (!destructuredMatch) continue
+
+      const destructuredStr = destructuredMatch[1]
+      const destructuredProps = destructuredStr.split(",")
+        .map((p: string) => p.trim().split("=")[0].split(":")[0].trim())
+        .filter((p: string) => p && !p.startsWith("..."))
+
+      // Find exact matches
+      const matched = new Set(destructuredProps.filter((p: string) => passedProps.includes(p)))
+      const missingInPassed = destructuredProps.filter((p: string) => !matched.has(p))
+      const extraInPassed = passedProps.filter((p: string) => !matched.has(p))
+
+      if (missingInPassed.length === 0 || extraInPassed.length === 0) continue
+
+      // Match unmatched props by similarity (shared lowercase substring)
+      let changed = false
+      for (const missing of missingInPassed) {
+        const missingLower = missing.toLowerCase()
+        let bestMatch = ""
+        let bestScore = 0
+        for (const extra of extraInPassed) {
+          const extraLower = extra.toLowerCase()
+          // Check for shared meaningful substring (3+ chars)
+          let score = 0
+          for (let len = 3; len <= Math.min(missingLower.length, extraLower.length); len++) {
+            for (let i = 0; i <= missingLower.length - len; i++) {
+              const sub = missingLower.slice(i, i + len)
+              if (extraLower.includes(sub) && len > score) score = len
+            }
+          }
+          if (score > bestScore) { bestScore = score; bestMatch = extra }
+        }
+        if (bestMatch && bestScore >= 3) {
+          // Rename: missing → bestMatch in the component file
+          compContent = compContent.replace(new RegExp(`\\b${missing}\\b`, "g"), bestMatch)
+          changed = true
+          // Remove from extraInPassed to avoid double matching
+          const idx = extraInPassed.indexOf(bestMatch)
+          if (idx >= 0) extraInPassed.splice(idx, 1)
+        }
+      }
+
+      if (changed) {
+        fs.writeFileSync(compPath, compContent)
+      }
+    }
+  } catch {}
+}
