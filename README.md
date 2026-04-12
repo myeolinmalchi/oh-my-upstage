@@ -1,4 +1,4 @@
-# OMU (Oh My Upstage)
+# Oh My Upstage
 
 <img width="2598" height="1176" alt="image" src="https://github.com/user-attachments/assets/088d795c-7305-433a-9e23-b57771d02a88" />
 
