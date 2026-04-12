@@ -112,9 +112,20 @@ export function trackExploration(state: SessionState, tool: string): string | nu
 }
 
 export function trackFailures(state: SessionState, tool: string, args: any, output: string): string | null {
-  const hash = `${tool}::${JSON.stringify(args).slice(0, 100)}`
-  const isError = output.includes("Error:") || output.includes("Could not find oldString")
+  const isError = output.includes("Error:") || output.includes("Could not find oldString") || output.includes("No changes to apply")
 
+  // Fix #18: Track edit failures per-file and force write-tool after 2 failures
+  if (isError && tool === "edit" && args?.filePath) {
+    const editKey = `edit::${args.filePath}`
+    const streak = (state.failureStreaks.get(editKey) || 0) + 1
+    state.failureStreaks.set(editKey, streak)
+    if (streak >= 2) {
+      return `\n\n🛑 [OMU] Edit failed ${streak} times on ${args.filePath}. STOP using edit. Read the file first, then use the write tool to rewrite it completely.`
+    }
+  }
+
+  // General failure tracking for non-edit tools
+  const hash = `${tool}::${JSON.stringify(args).slice(0, 100)}`
   if (isError) {
     const streak = (state.failureStreaks.get(hash) || 0) + 1
     state.failureStreaks.set(hash, streak)

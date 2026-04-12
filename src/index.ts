@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { validate, ensureDirectory, ensureImportedFiles, stripCodeFences, fixClientPath, blockDestructive, forceJsx, stripUninstalledImports, fixReactImports, fixDuplicateExports, fixBracketCallSyntax, stripTypeScriptImports, fixLocalStorageInit, fixMissingDefaultExport, fixCallbackProps, ensurePersistence, ensureListItemClass } from "./hooks/validator.js"
+import { validate, ensureDirectory, ensureImportedFiles, stripCodeFences, fixClientPath, blockDestructive, forceJsx, stripUninstalledImports, fixReactImports, fixDuplicateExports, fixBracketCallSyntax, stripTypeScriptImports, fixLocalStorageInit, fixMissingDefaultExport, fixCallbackProps, ensurePersistence, ensureListItemClass, fixInfiniteUseEffect } from "./hooks/validator.js"
 import { type SessionState, type Phase, createState, transition, extractFilePaths, trackWrite, trackEdit, trackExploration, trackFailures, getRemainingFiles, PHASE_PROMPTS } from "./hooks/coordinator.js"
 import { autoFixImports, autoFixCors, autoFixApiUrls, autoFixProps } from "./hooks/verifier.js"
 import { analyzeJsx, analyzeServer } from "./hooks/analyzer.js"
@@ -44,7 +44,7 @@ function fixScaffoldApp(): void {
     const appPath = path.join(srcDir, "App.jsx")
     if (!fs.existsSync(appPath)) return
     const content = fs.readFileSync(appPath, "utf-8")
-    if (!content.includes("Get started") && !content.includes("Count is")) return
+    if (!content.includes("Get started") && !content.includes("Count is") && !content.includes("<h1>App</h1>")) return
 
     const compDir = path.join(srcDir, "components")
     const hookDir = path.join(srcDir, "hooks")
@@ -181,6 +181,7 @@ const OMUPlugin: Plugin = async (ctx) => {
         fixCallbackProps(tool, output.args)
         ensurePersistence(tool, output.args)
         ensureListItemClass(tool, output.args)
+        fixInfiniteUseEffect(tool, output.args)
 
         // Phase transitions
         if (state.phase === "UNDERSTAND" && tool === "write") {
@@ -201,6 +202,14 @@ const OMUPlugin: Plugin = async (ctx) => {
           if (cmd.includes("npm run build") || cmd.includes("vite build")) {
             fixScaffoldApp()
             runAutoFixImports()
+          }
+        }
+
+        // Fix #17: Block redundant builds in DONE phase
+        if (state.phase === "DONE" && tool === "bash" && output.args?.command) {
+          const cmd = output.args.command as string
+          if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+            output.args.command = "echo '[OMU] Build already passed. Task is complete. STOP.'"
           }
         }
 
@@ -243,6 +252,12 @@ const OMUPlugin: Plugin = async (ctx) => {
               }
               autoFixCors(filePath)
               autoFixApiUrls(filePath)
+
+              // Fix #19: Proactive App.jsx wiring after component writes
+              if (filePath.includes("/components/")) {
+                fixScaffoldApp()
+                runAutoFixImports()
+              }
             }
 
             const remaining = getRemainingFiles(state)
@@ -285,6 +300,33 @@ const OMUPlugin: Plugin = async (ctx) => {
           if (tool === "bash" && args?.command) {
             const cmd = args.command as string
             if (cmd.includes("npm run build") || cmd.includes("vite build")) {
+              // Fix #16: Detect wrong build target (tsc instead of vite build)
+              if (output.output.includes("> tsc") && !output.output.includes("vite")) {
+                try {
+                  const fs = require("fs")
+                  const path = require("path")
+                  const clientPkg = path.join(process.cwd(), "client", "package.json")
+                  if (fs.existsSync(clientPkg)) {
+                    // Auto-run correct build
+                    const cp = require("child_process")
+                    fixScaffoldApp()
+                    runAutoFixImports()
+                    const result = cp.spawnSync("npm", ["run", "build"], {
+                      cwd: path.join(process.cwd(), "client"),
+                      timeout: 30000, encoding: "utf-8"
+                    })
+                    if (result.status === 0) {
+                      transition(state, "DONE")
+                      output.output = result.stdout + `\n\n✅ ${phaseTag} Client build passed (auto-redirected to client/). Task complete.`
+                    } else {
+                      const errors = (result.stderr || result.stdout || "").split("\n").filter((l: string) => l.includes("Error") || l.includes("error")).slice(0, 5).join("\n")
+                      output.output = `\n\n🛑 ${phaseTag} Client build failed:\n${errors}\nFix errors in client/src/ and run: cd client && npm run build`
+                    }
+                    return
+                  }
+                } catch {}
+              }
+
               state.buildAttempts++
               if (output.output.includes("Error") || output.output.includes("error") || output.output.includes("failed")) {
                 if (state.buildAttempts >= 3) {

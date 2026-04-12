@@ -566,3 +566,50 @@ export function fixLocalStorageInit(tool: string, args: any): void {
 
   args.content = c
 }
+
+/**
+ * Fix useEffect infinite loops: useEffect(() => { setX(...) }, [x])
+ * where setX sets the same state variable that's in the dependency array.
+ * This always causes an infinite re-render loop.
+ */
+export function fixInfiniteUseEffect(tool: string, args: any): void {
+  if (tool !== "write" || !args?.content || !args?.filePath) return
+  if (!args.filePath.endsWith(".jsx") && !args.filePath.endsWith(".js")) return
+  let c = args.content as string
+  if (!c.includes("useEffect")) return
+
+  const lines = c.split("\n")
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (!line.match(/useEffect\s*\(\s*\(\)\s*=>/)) { i++; continue }
+
+    let depth = 0
+    let start = i
+    let end = -1
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === "(") depth++
+        if (ch === ")") depth--
+      }
+      if (depth <= 0 && j > i) { end = j; break }
+    }
+    if (end === -1) { i++; continue }
+
+    const block = lines.slice(start, end + 1).join("\n")
+    const setterMatch = block.match(/\bset([A-Z]\w*)\s*\(/)
+    const depMatch = block.match(/\]\s*,\s*\[(\w+)\]\s*\)/)
+    if (setterMatch && depMatch) {
+      const setterTarget = setterMatch[1].toLowerCase()
+      const depVar = depMatch[1].toLowerCase()
+      if (setterTarget === depVar) {
+        lines.splice(start, end - start + 1)
+        continue
+      }
+    }
+    i = end + 1
+  }
+
+  const result = lines.join("\n")
+  if (result !== c) args.content = result
+}
