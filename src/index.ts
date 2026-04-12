@@ -44,7 +44,6 @@ function fixScaffoldApp(): void {
     const appPath = path.join(srcDir, "App.jsx")
     if (!fs.existsSync(appPath)) return
     const content = fs.readFileSync(appPath, "utf-8")
-    if (!content.includes("Get started") && !content.includes("Count is") && !content.includes("<h1>App</h1>")) return
 
     const compDir = path.join(srcDir, "components")
     const hookDir = path.join(srcDir, "hooks")
@@ -54,6 +53,11 @@ function fixScaffoldApp(): void {
       .filter((f: string) => f.endsWith(".jsx") || f.endsWith(".js"))
       .map((f: string) => path.basename(f, path.extname(f)))
     if (components.length === 0) return
+
+    // Check if App.jsx is scaffold OR missing component imports
+    const isScaffold = content.includes("Get started") || content.includes("Count is") || content.includes("<h1>App</h1>")
+    const missingImports = components.some((c: string) => !content.includes(`import ${c}`))
+    if (!isScaffold && !missingImports) return
 
     const hooks: string[] = []
     if (fs.existsSync(hookDir)) {
